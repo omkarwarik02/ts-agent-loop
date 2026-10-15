@@ -1,7 +1,7 @@
 import "dotenv/config";
 import Groq from "groq-sdk";
 import { z } from "zod";
-import { getTimeTool } from "./tool.js";
+import { getTimeTool } from "./tools.js";
 
 const MODEL = "openai/gpt-oss-120b";
 const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
