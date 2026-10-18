@@ -10,8 +10,49 @@ import {
 } from "./tools.js";
 
 const MODEL = "openai/gpt-oss-120b";
-const MAX_STEPS = 8;
+const MAX_STEPS = 6;
+const MAX_RETRIES = 2;
 const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
+
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve,ms));
+
+
+async function callModel(messages: ChatCompletionMessageParam[], allowTools:boolean){
+  let attempt = 0;
+
+  while(true){
+    try{
+      return await groq.chat.completions.create({
+        model:MODEL,
+        messages,
+        tools: allTools.map(toGroqTool),
+        tool_choice:"auto"
+      })
+    } catch(err){
+      const isRateLimit = err instanceof Groq.APIError && err.status === 429;
+
+      if(!isRateLimit || attempt >= MAX_RETRIES){
+        throw err;
+      }
+      attempt++;
+      console.log(`⏳ Rate limited. Waiting 20s, then retry ${attempt}/${MAX_RETRIES}...`);
+      await sleep(20_000);
+    }
+  }
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 async function runAgent(question: string): Promise<string> {
   const messages: ChatCompletionMessageParam[] = [
@@ -20,7 +61,7 @@ async function runAgent(question: string): Promise<string> {
       content:
         "You are a research assistant. For anything about current versions, news or facts that change over time, use web_search. " +
         "If the search snippets are not detailed enough, use fetch_page on the most relevant URL to read the full page. " +
-        "Never answer those from memory. If a tool fails, say so clearly instead of guessing. Cite sources as plain URLs.",
+        "Never answer those from memory. If a tool fails, say so clearly instead of guessing. Cite sources as plain URLs." + "Be efficient: use as few tool calls as needed. Once you have read an official source that answers the question, stop searching and answer."
     },
     { role: "user", content: question },
   ];
@@ -31,12 +72,15 @@ async function runAgent(question: string): Promise<string> {
     step++;
     console.log(`\n---- steps ${step}----`);
 
-    const response = await groq.chat.completions.create({
-      model: MODEL,
-      messages,
-      tools: allTools.map(toGroqTool),
-      tool_choice: "auto",
-    });
+    const isLastStep = step === MAX_STEPS;
+    let response;
+    try{
+       response = await callModel(messages, !isLastStep);
+
+    } catch(err){
+      const message = err instanceof Error ? err.message : String(err);
+      return `Agent stopped at step ${step}: ${message}`;
+    }
 
     const msg = response.choices[0]?.message;
     if (!msg) throw new Error("No response from model");
