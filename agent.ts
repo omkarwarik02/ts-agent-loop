@@ -25,8 +25,7 @@ async function callModel(messages: ChatCompletionMessageParam[], allowTools:bool
       return await groq.chat.completions.create({
         model:MODEL,
         messages,
-        tools: allTools.map(toGroqTool),
-        tool_choice:"auto"
+        ...(allowTools ? { tools: allTools.map(toGroqTool), tool_choice: "auto" as const } : {})
       })
     } catch(err){
       const isRateLimit = err instanceof Groq.APIError && err.status === 429;
@@ -58,16 +57,23 @@ async function runAgent(question: string): Promise<string> {
   const messages: ChatCompletionMessageParam[] = [
     {
       role: "system",
-      content:
+         content:
+        `Today's date is ${new Date().toDateString()}. ` +
         "You are a research assistant. For anything about current versions, news or facts that change over time, use web_search. " +
         "If the search snippets are not detailed enough, use fetch_page on the most relevant URL to read the full page. " +
-        "Never answer those from memory. If a tool fails, say so clearly instead of guessing. Cite sources as plain URLs." + "Be efficient: use as few tool calls as needed. Once you have read an official source that answers the question, stop searching and answer."
+        "Never answer those from memory. If a tool fails, say so clearly instead of guessing. Cite sources as plain URLs. " +
+        "Be efficient: use as few tool calls as needed. Once you have read an official source that answers the question, stop searching and answer.",
     },
     { role: "user", content: question },
   ];
 
-  let step = 0;
 
+  const seenCalls = new Set<string>();
+  let step = 0;
+  let totalTokens = 0;
+  const startTime = Date.now();
+
+  try{
   while (step < MAX_STEPS) {
     step++;
     console.log(`\n---- steps ${step}----`);
@@ -82,8 +88,15 @@ async function runAgent(question: string): Promise<string> {
       return `Agent stopped at step ${step}: ${message}`;
     }
 
+    const stepTokens = response.usage?.total_tokens ?? 0;
+    totalTokens += stepTokens;
+     console.log(`📊 ${stepTokens} tokens this step`);
+
     const msg = response.choices[0]?.message;
     if (!msg) throw new Error("No response from model");
+    if(msg.reasoning){
+      console.log(`💭 ${msg.reasoning.slice(0, 200)}`)
+    }
 
     const toolCalls = msg.tool_calls ?? [];
 
@@ -100,9 +113,16 @@ async function runAgent(question: string): Promise<string> {
     for (const call of toolCalls) {
       const tool = findTool(call.function.name);
 
-      const result: ToolResult = tool
-        ? await runTool(tool, call.function.arguments)
-        : { ok: false, error: `Unkown tool:${call.function.name}` };
+
+      const callKey = `${call.function.name}:${call.function.arguments}`;
+      const isDuplicate = seenCalls.has(callKey);
+      seenCalls.add(callKey);
+
+      const result: ToolResult = isDuplicate
+        ? { ok: false, error: "You already made this exact call. Use the earlier result instead of repeating it." }
+        : tool
+          ? await runTool(tool, call.function.arguments)
+          : { ok: false, error: `Unknown tool: ${call.function.name}` }
 
       const preview = result.ok ? result.output.slice(0, 150) : result.error;
       console.log(
@@ -117,6 +137,10 @@ async function runAgent(question: string): Promise<string> {
     }
   }
   return `Stopped after ${MAX_STEPS} steps without a final answer.`;
+} finally{
+  const seconds = ((Date.now() - startTime)/1000).toFixed(1);
+   console.log(`\n📋 Summary: ${step} steps · ${totalTokens} tokens · ${seconds}s`)
+}
 }
 
 const answer = await runAgent("What's the latest version of React and what changed?");
